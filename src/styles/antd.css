@@ -1,0 +1,13 @@
+@import "~antd/dist/antd.css";
+
+.ant-form-item-label {
+  text-align: left;
+}
+
+.ant-modal-header {
+  text-align: center;
+}
+
+.ant-modal-footer {
+  text-align: center;
+}
