@@ -1,6 +1,9 @@
-# Getting Started with Create React App
+## Description
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+Management software project for Alutec
+
+Technology stack (React (Typescript), Redux, Saga, AntD, Styled Components)
+
 
 ## Available Scripts
 
