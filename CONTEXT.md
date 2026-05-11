@@ -18,10 +18,66 @@ Solicitation → Orçamento → Payment identified (Finance) → OS created (Adm
 
 *Note: Glass is ordered AFTER the frame is fabricated and measured, not in parallel. The frame must be finished first so exact glass dimensions can be confirmed.*
 
+### Orçamento (Quotation) — real document structure
+
+Based on the Roberta e Fred quotation (Rev 01 – Opção Preta):
+
+**Header:** Company name (E&M / Alutec), address, phone, email, Instagram.
+**Customer block:** NOME (customer name), OBRA (site address), A/C (attention/contact), TEL/FAX, CPF/CNPJ, E-MAIL.
+**Versioning:** 1ª EMISSÃO (date) and REVISÃO: 01 – opção cor preta.
+**Reference line:** "Orçamento proposta para fornecimento, entrega e instalação de esquadrias em alumínio e vidros."
+
+**Section 1 – DESCRIÇÃO DAS ESQUADRIAS:**
+
+| Column | Content |
+|--------|----------|
+| ITEM | Sequence: 1.1, 1.2, 1.3… |
+| LOCAL | Room/location: "SALA GOURMET", "ÁREA EXTERNA", "ESCRITÓRIO" |
+| DESCRIÇÃO | **Manually typed free-text field.** Sales writes whatever is relevant — product descriptions, scope notes (e.g., "retirada de massa de vidraceiro"), diagnostic observations (e.g., "à ser verificada na desmontagem"). Not derived from templates or other columns. |
+| LINHA | Profile family/brand: "Suprema", "Tub." |
+| TRATAMENTO | Surface finish: "Pintura eletrostática preta", "Anodização bronze 3002" |
+| VIDRO | Glass specification: "Liso incolor 04 mm", "Laminado inc. 08 mm", "Mini boreal" |
+| MEDIDA | Width × Height in meters: "2,10 x 2,20" |
+| QUANT. | Quantity (usually 01) |
+| PREÇO | Total price per line item (R$) |
+
+**Section 2 – PREÇO TOTAL:** Option label + total value in words.
+**Section 3 – CONDIÇÕES DE PAGAMENTO:** Installment breakdown (e.g., 50% sinal, 25% in 30 days, 25% in 60 days).
+**Section 4 – PRAZO DE ENTREGA E INSTALAÇÃO:** Lead time in days after acceptance (e.g., 30-35).
+**Section 5 – GARANTIA:** Warranty periods per component.
+**Section 6 – TERMOS GERAIS:** General terms and conditions.
+
+**Key design implications:**
+- The orçamento is a **flat list with a location attribute** — items are not nested under rooms
+- The DESCRIÇÃO column is **manually typed free text** — it can contain anything related to the project: product descriptions, scope notes, diagnostic observations. It is not auto-generated from templates.
+- Multiple orçamentos per customer are supported — tracked via version labels ("Rev 01", "Opção preta")
+- Payment terms are **proposed on the orçamento** and flow into installments upon acceptance
+- The orçamento has a **validity period** (10 days) and **lead time**承诺
+
+### OS (Ordem de Serviço) — real document structure
+
+Based on the Flávio Viana OS (a maintenance/repair order):
+
+- **Header:** Same company letterhead
+- **Customer:** FLÁVIO GONÇALVES REIS VIANNA FILHO
+- **Section:** "DESCRIÇÃO DAS ESQUADRIAS PARA MANUTENÇÃO"
+- **Items include descriptions like:**
+  - "Porta de correr com duas folhas móveis e uma fixa: retirada de massa de vidraceiro para instalação de guarnição EPDM, substituição de escovas de vedação e roldanas"
+  - "Janela de correr com duas folhas móveis: à ser verificada na desmontagem para saber se tem conserto"
+  - "Janela maxim-ar em duas seções com alisar interno"
+- **Each item has:** Anodização bronze 3002 (treatment specified per item)
+- **Marked: "MEDIDA NÃO OFICIAL"** — confirming that unofficial dimensions require a measurement visit
+- **Columns for:** DESCRITIVO (description), TRATAMENTO (treatment), LOCAL (location)
+
+**Key design implications:**
+- The OS inherits the line item structure from the orçamento but can include **diagnostic uncertainty** ("à ser verificada na desmontagem")
+- The OS explicitly marks whether dimensions are official or unofficial
+- Maintenance OS items include **scoped work** (tasks to perform, not just products to build)
+
 ### Step-by-step
 
 1. **Sales** receives customer solicitation and generates the orçamento.
-2. **Finance** (Fátima) identifies the payment condition upon customer acceptance; records receivable installments in the spreadsheet. OS can only proceed after this step.
+2. **Finance** (Fátima) identifies/records the first payment. This is the binding trigger — not a signature, but **payment received**. Fátima records receivable installments in the spreadsheet. The payment terms proposed on the orçamento are what the customer commits to (no renegotiation at this stage). OS can only proceed after payment identification. **Rare exception:** CEO may approve OS creation without payment.
 3. **Administrative** (Munique, Aline, Daniel) creates the OS with technical drawing based on the accepted quote.
 4. **Sales** (Edmilson, Daniel) reviews the OS against the original quote for correctness. If correct, returns to Administrative.
 5. **Administrative** stamps and dates the OS. Three copies are printed: one to **Fabrication** (Zé), one attached to the printed quote, one for the **official measurement visit**.
@@ -34,6 +90,23 @@ Solicitation → Orçamento → Payment identified (Finance) → OS created (Adm
     - **Scenario B (Post-acceptance measurement, standard flow):** Customer sends sketches. Orçamento is created with unofficial dimensions. Customer accepts. OS is created with status "Pending Measurement." Sales visits the site, enters official dimensions. If dimensions match the quote, OS status moves to "Ready for Production." If there's a discrepancy, a change order is issued — the quote may need to be revised.
 
     **Critical business rule: Fabrication MUST NOT start with unofficial dimensions.** Cutting glass or stone to wrong dimensions causes irreversible waste. Aluminum profiles cut too short become scrap. The system must enforce this as a hard gate — no cut lists or purchase orders for long-lead items (glass, stone) until the OS has official dimensions verified.
+
+### Maintenance/Repair — separate flow
+
+Maintenance and repair jobs follow a **shorter workflow** than new projects:
+
+```
+Customer call → Quick assessment → (Small orçamento or direct dispatch) → Maintenance OS → Execution
+```
+
+**Key differences from new projects:**
+- No full procurement cycle if parts are in stock — direct dispatch
+- Procurement only when the repair needs custom-ordered items
+- No formal minimum threshold for dispatching, but the business has an informal sense of what's worth a truck roll
+- The maintenance OS (like Flávio Viana's) describes **scoped work** (e.g., "retirada de massa de vidraceiro", "substituição de escovas de vedação e roldanas"), not products to fabricate
+- Items may include **diagnostic uncertainty** written as free text ("à ser verificada na desmontagem para saber se tem conserto") — not a status flag, just manually typed
+
+A maintenance visit **can lead to a new project orçamento** — the installer sees broader scope and a new quotation is generated.
 7. **Fabrication** (Zé) receives the OS and performs material takeoff (aluminum + accessories). A copy is given to **Purchasing** for ordering.
 8. **Purchasing** (Aline) creates purchase orders for required materials (aluminum, accessories) and sends to suppliers. Tracks in the spreadsheet: date Zé received the OS, date order placed with supplier, treatment (aluminum color), and observations.
 9. Supplier confirms order and returns pedido number + values. This is recorded in the spreadsheet.
@@ -68,7 +141,9 @@ Solicitation → Orçamento → Payment identified (Finance) → OS created (Adm
 A **project** (venda, also called contrato) is an agreement with a customer to supply and install products. Each project has:
 
 - A **sale number** (número da venda) — a sequential commercial identifier assigned by **Finance** when recording the sale in the receivables spreadsheet. Cumulative since the business started (not per-year). In March 2026, numbers were roughly in the 32,491–33,135 range. Customer-facing reference.
-- One **customer** (cliente)
+- One **customer** (cliente) — can be an individual (CPF) or company (CNPJ). Customers can return for multiple projects over time.
+- A **site address** (obra/endereço) — where installation happens. Can differ from customer's home address (e.g., a contractor ordering for a client's property).
+- A **contact/reference** (A/C) — the person Sales communicates with about this specific project (e.g., the customer's engineer). Not a separate entity, just a project-level contact.
 - One or more **products/services** (e.g. "janelas + box + cortina de vidro")
 - A **total value** (valor total)
 - A **delivery address** (endereço)
@@ -76,6 +151,8 @@ A **project** (venda, also called contrato) is an agreement with a customer to s
 - A **delivery/installation date** — can span multiple visits
 
 **Relationship to OS:** one project → one OS (service order), but they carry different numbers. The sale number is Finance's commercial reference; the OS number is the shop floor's operational reference.
+
+**Multiple orçamentos per customer:** Sales may send multiple quotation options (e.g., Option 1: white profiles, Option 2: black profiles). Customer picks one. The accepted orçamento becomes the project scope. Customers cannot cherry-pick items across options — they accept one option whole.
 
 ### OS (Ordem de Serviço) — Status Lifecycle
 
@@ -129,8 +206,15 @@ An **order** (pedido) placed with a supplier for materials that will go into a s
 
 ### Installation (Instalação)
 
-On-site work performed by Alutec's crew to install fabricated products at the customer's property. Each installation day tracks:
+On-site work performed by Alutec's crew to install fabricated products at the customer's property.
 
+**Key rules:**
+- An **installation visit** serves ONE project only — materials and measurements are project-specific
+- A single project can require **multiple visits** — different products may be ready at different times (e.g., windows installed first, shower box glass arrives later)
+- **Scheduling** is done by Aline based on: material/pickup readiness → crew availability → customer availability
+- **Vehicle assignment** based on transport needs: large glass → Kombi, small fittings → Saveiro/Gol
+
+Each installation day tracks:
 - **Installer** (instalador) and **helper** (ajudante)
 - **Vehicle** used (Kombi, Saveiro, Gol)
 - **Task description** including what to bring, what to pick up from suppliers
@@ -209,6 +293,16 @@ Base identity — the type/family of the thing. Not size-specific or color-speci
 - **Stone:** material name (Amarelo Icaraí, Verde Ubatuba, Cinza Corumbá, Mármore Branco, Preto São Gabriel)
 - **Hardware:** category (trinco, roldana, dobradiça, fecho, baguete) + model code
 
+### LINHA (profile system / product line)
+
+A **LINHA** is a family of compatible aluminum profiles designed to work together. Examples: Suprema, Tubular (Tub.), Gold, Supreme, Performance, etc.
+
+The LINHA determines **which profiles are used** in a product template. A "Janela de Correr 2 Folhas" in Suprema uses different profiles than the same product type in Tubular.
+
+There are approximately **5–10 common LINHAs**.
+
+**Key implication:** Product Template = LINHA × product type. The template can't just be "Janela 2 Folhas" — it must know which profile system to use.
+
 ### Specification (variant attributes)
 
 Attributes that change price/behavior but aren't dimensions:
@@ -233,20 +327,33 @@ Attributes that change price/behavior but aren't dimensions:
 
 Supplier-specific pricing: each supplier maintains their own price list per material + spec.
 
+**How line item prices are calculated:**
+- Sales manually calculates each line item price using supplier price lists + a margin
+- The customer sees only the **all-in price per line item** — no cost breakdown showing materials vs. labor vs. margin
+- **Supplier price lists** are maintained informally (WhatsApp, paper, memory) — a pain point the system should solve
+- **Margin is variable** by job size and customer relationship, but likely based on a standard markup percentage that Sales adjusts per quote
+
+### Pricing rules from the general terms
+
+- **Orçamento validity:** 10 business days from emission date — after that, prices subject to change
+- **Unit prices valid for total purchase only** — partial changes may affect pricing
+- **Dimension change rule:** if official measurements differ from quoted dimensions by more than 5cm, the orçamento is subject to re-quoting
+- Items for irregular openings (cantoneiras, barras, alisares) are charged separately as ad-hoc line items
+
 ### Product templates (BOM generators)
 
 A **product template** (e.g., "Janela de Correr 2 Folhas") takes inputs (width, height, profile color, glass type, glass thickness) and generates a full BOM:
 
 ```
-Example: Janela de Correr 2 Folhas
-Inputs: W = 1500mm, H = 1200mm, profile = branco, glass = temperado 6mm
+Example: Janela de Correr 2 Folhas (LINHA: Suprema)
+Inputs: W = 1500mm, H = 1200mm, profile color = branco, glass = temperado 6mm
 
 Generates:
-  2x Perfil U681 @ length H (verticals)
-  2x Perfil U681 @ length W (horizontals)
+  2x Perfil U681 @ length H (verticals) — Suprena-specific profile
+  2x Perfil U681 @ length W (horizontals) — Suprema-specific profile
   1x Vidro temperado 6mm @ area (W × H, less clearance)
-  4x Roldana (finish = branco)
-  2x Trinco (finish = branco)
+  4x Roldana (finish = branco) — Suprema-compatible model
+  2x Trinco (finish = branco) — Suprema-compatible model
 ```
 
 Templates reference Materials and Specs — not hard-coded sizes. Dimensions are computed at quote/OS time.
@@ -256,10 +363,82 @@ Templates reference Materials and Specs — not hard-coded sizes. Dimensions are
 - If a dimension is **variable per job** (window sizes, glass cuts, stone cuts) → keep dimensions **separate** and calculated
 - If a dimension is **fixed per model** (hinge hole spacing, roller dimensions) → store as a **fixed attribute** of the Material/Item
 
-## Services
+## System UX philosophy
+
+### Unified interface — same structure, different scope
+
+The system presents the **same page structure to all roles**. What changes per role is the **scope of data shown** and **which actions are available** — not the layout or component structure. Actions a role cannot perform are **hidden entirely, not disabled**. This keeps the UI consistent and prevents it from feeling like different applications for different people. Same project page, same calendar, same dashboard structure — for everyone.
+
+### Project as the navigation root
+
+The main entity users navigate to is a **Project (Projeto)** — an abstraction that groups everything related to a customer engagement: the orçamento, the commercial record, the OS, purchase orders, fabrication, and installation.
+
+- A project is **created automatically** when a new orçamento is initiated — the user doesn't create a project explicitly, they create an orçamento and the project is transparently created underneath.
+- The project is the **navigation root**.
+- Pre-acceptance quotes that haven't converted yet live in a separate "Orçamentos" section.
+
+### Notification system
+
+Notifications are **alert-driven** with two trigger types:
+1. **State transition events** — something changed in the workflow
+2. **Time-proximity conditions** — something is approaching or has passed a deadline
+
+Three severity levels:
+
+| Level | Behavior | UI |
+|-------|----------|----|
+| **Info** | Something happened the role should know about. No immediate action. | Dismissible. Lives in bell inbox. |
+| **Warning** | Something needs attention within ~1 week. | Dismissible. Bell badge updates on login. |
+| **Alert (red)** | Something is blocking a project or past a committed deadline. | **Cannot be dismissed** — only acknowledged (snoozes 24h). Auto-resolves when underlying condition resolves. Bell icon turns red. |
+
+**Separate from inbox:** toasts are temporary overlays for immediate feedback on the current user's action ("PO sent to supplier"). Auto-dismiss after seconds. Not stored in bell inbox.
+
+**Fabrication workers are not system users** and receive no notifications. Notifications that would target fabrication are routed to the purchasing role, who manages fabrication by proxy.
+
+**Single data source:** When the underlying condition resolves (materials received, installation completed, block resolved), the alert auto-resolves across all surfaces — bell inbox, dashboard, project page.
+
+### Dashboard pendency component
+
+The dashboard shows a **fixed, persistent list** — not dismissable — of items where the **next required action belongs to the current logged-in user**. This is the user's work queue: "these things are waiting on you." Updates automatically when the list changes. Not the same as the notification inbox — inbox is "things you should know about," the pendency list is "things only you can unblock right now." Both derive from the same data source, filtered differently.
+
+### Project page alert section
+
+When a user opens a specific project, the project page shows an **alert section** listing all active warnings and alerts for that project — regardless of which role they target. This gives anyone who opens the project a full picture of what is blocking or at risk. Same data source as bell inbox and dashboard pendency, filtered to the current project.
+
+### Calendar — one component, role-aware filters
+
+One calendar component, same for all roles. Role awareness is expressed through **which filter options are visible** — filter types irrelevant or restricted for a role are hidden.
+
+- Everyone sees **installations** (customer commitments)
+- Finance and purchasing see **receivable and payable due dates**
+- Purchasing sees **supplier pickups and deliveries**
+
+Shows **dated events** — installation appointments, due dates, supplier deliveries, forecast delivery dates. Does not show the project lifecycle as a timeline (that's a kanban or Gantt, a different view).
+
+Events are **color-coded using the same severity palette** as notifications: neutral when healthy, amber when a warning exists, red when an alert exists. This makes the calendar a consistent surface — same color language everywhere.
+
+The calendar also serves **installation scheduling**: when selecting a date for a new installation, it shows what's already committed (crew assignments, vehicles) to prevent double-booking.
 
 - **Installation** — on-site installation of fabricated products by Alutec's crew of installers and helpers.
 - **Maintenance & repairs** — replacing broken glass, fixing frames, adjusting sliding mechanisms.
+
+## Warranty & general terms
+
+**Warranty periods (standardized):**
+- Manufacturing defects (defeito de fabricação): 2 years
+- Hardware/accessories (acessórios): 2 years
+- EPDM gaskets (guarnição em EPDM): 5 years
+
+**General terms (standard boilerplate, rarely changed):**
+- Customer must have the installation opening ready 15 days before delivery
+- Customer must receive and store delivered items for up to 5 days before installation
+- Vertical transport is Alutec's responsibility; if technical conditions don't allow (no stairs/elevator), customer hires external crane/hoisting
+- **Dimension change rule:** if official measurements differ from quoted dimensions by more than 5cm, the orçamento is subject to re-quoting
+- Corner covers, flashings, and trims (cantoneiras, barras, alisares) for irregular openings are **charged separately** as ad-hoc line items, not included in the standard template
+- Orçamento validity: 10 business days from emission
+- Unit prices valid only for the total purchase; partial changes may affect pricing
+- Waste removal from installation is Alutec's responsibility
+- Masonry, putty work, and painting are **not included** in scope
 
 ## Deviations from the happy path
 
