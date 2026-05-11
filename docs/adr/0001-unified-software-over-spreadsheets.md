@@ -1,0 +1,3 @@
+# Unified software over spreadsheets + paper
+
+Alutec currently runs on three disconnected spreadsheets (supplier control, receivables, installation scheduling) plus a paper-based OS (service order) system. Customer name is the de facto cross-reference key across all three, which breaks under concurrent same-customer projects, staff absence, and name spelling inconsistencies. We're building a unified software system that naturally evolves the current process — it should feel familiar enough to Aline, Fátima, and Zé that they don't need to relearn how to do their jobs. The spreadsheets will eventually become unnecessary.

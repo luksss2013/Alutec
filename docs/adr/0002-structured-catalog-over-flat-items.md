@@ -1,0 +1,3 @@
+# Structured product catalog (Material → Spec → Dimensions) over free-text or flat items
+
+The product catalog separates **what a material is** (Material: profile U681, glass type temperado) from **how it's specified** (Spec: branco, 6mm thickness) from **its dimensions** (per-job: length, width×height). This enables product templates that auto-generate BOMs and quotes from parameters, price updates that propagate to all future quotes in one edit, and inventory tracking by material+spec rather than by every possible size×color combination. The alternative — flat line items or free-text descriptions — would either force manual BOM calculation per OS or create an unmanageable catalog explosion (a separate SKU for every profile×color×length combination).
