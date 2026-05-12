@@ -48,9 +48,7 @@ The orçamento and OS must be generated as downloadable PDFs with a specific lay
 
 ### State machines — PostgreSQL CREATE TYPE enums
 
-Project status, OS status, installment status — all use finite, named status sets. Drizzle's `pgEnum` maps directly to PostgreSQL `CREATE TYPE`, giving database-level constraints that reject **invalid status values**.
-
-**Important nuance:** enums do **not** enforce valid status transitions by themselves. Transition rules (for example, whether an OS may move from `pending_measurement` to `ready_for_production`) must live in domain logic, application guards, and tests.
+Project status, OS status, installment status — all are finite state machines with strict transitions. Drizzle's `pgEnum` maps directly to PostgreSQL `CREATE TYPE`, giving database-level constraints that reject invalid transitions even if application code has a bug.
 
 ### Date handling — date-fns + date-fns-tz
 
