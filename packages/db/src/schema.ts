@@ -1,9 +1,16 @@
-// Alpine — Alutec Database Schema
+// Alutec Database Schema
 // Drizzle ORM + PostgreSQL
 //
-// State machines use pgEnum for database-level constraint enforcement.
-// All timestamps are TIMESTAMPTZ (UTC). Financial dates are DATE (no time).
-// Customer name dedup uses PostgreSQL full-text search.
+// This schema reflects the stabilized domain model after the grill/discovery phase.
+// It intentionally separates:
+// - Project: high-level commercial lifecycle
+// - Service Order (OS): detailed production lifecycle
+//
+// Notes:
+// - All timestamps use TIMESTAMPTZ (`timestamp(..., { withTimezone: true })`)
+// - Financial due dates use DATE
+// - Customer dedup/search is modeled through `normalizedName`; a trigram index can be
+//   added in a raw SQL migration if needed.
 
 import {
   pgEnum,
@@ -24,100 +31,98 @@ import {
 import { relations } from "drizzle-orm";
 
 // ─────────────────────────────────────────────
-// ENUMS — State machines & fixed vocabularies
+// ENUMS
 // ─────────────────────────────────────────────
 
-// Orçamento status
+export const customerDocumentTypeEnum = pgEnum("customer_document_type", [
+  "cpf",
+  "cnpj",
+]);
+
 export const orcamentoStatusEnum = pgEnum("orcamento_status", [
-  "draft",       // being created by Sales
-  "sent",        // sent to customer
-  "accepted",    // customer accepted — project created
-  "rejected",    // customer rejected
-  "expired",     // 10 business days passed without acceptance
-  "revised",     // superseded by a new revision
+  "draft",
+  "sent",
+  "accepted",
+  "rejected",
+  "expired",
+  "revised",
 ]);
 
-// Project (venda) status
+export const projectTypeEnum = pgEnum("project_type", [
+  "new_work",
+  "maintenance",
+]);
+
+// Project status is deliberately high-level.
 export const projectStatusEnum = pgEnum("project_status", [
-  "quotation",               // orçamento sent, awaiting acceptance
-  "payment_identified",      // Finance recorded first payment
-  "os_created",              // OS created by Admin
-  "pending_sales_review",    // OS awaiting Sales review
-  "pending_measurement",     // OS awaiting official measurement visit
-  "dimensions_verified",     // Official dimensions confirmed
-  "ready_for_production",    // Ready for Zé's material takeoff
-  "in_fabrication",          // Fabrication started
-  "frame_complete",          // Frame assembled, glass dimensions taken
-  "glass_ordered",           // Glass purchase order placed
-  "glass_ready",             // Glass received at factory / ready for pickup
-  "installation_scheduled",  // Installation date set
-  "installed",               // Installation completed
-  "closed",                  // All payments received, project settled
+  "quoting",
+  "accepted",
+  "in_progress",
+  "installed",
+  "closed",
 ]);
 
-// OS status mirrors project status for the production pipeline
+// OS status owns the detailed production lifecycle.
 export const osStatusEnum = pgEnum("os_status", [
-  "created",                 // OS created by Admin
-  "pending_sales_review",    // Awaiting Sales review
-  "approved",               // Sales approved
-  "pending_measurement",    // Awaiting measurement visit
-  "dimensions_verified",    // Official dimensions confirmed
-  "ready_for_production",   // Materials ready, can start fabrication
-  "in_fabrication",         // Fabrication in progress
-  "frame_complete",         // Frame done, glass dims taken
-  "glass_ordered",          // Glass PO placed
-  "glass_ready",            // Glass ready for pickup
-  "installation_scheduled", // Installation date set
-  "installed",              // Installation completed
+  "created",
+  "pending_sales_review",
+  "approved",
+  "pending_measurement",
+  "dimensions_verified",
+  "ready_for_production",
+  "in_fabrication",
+  "frame_complete",
+  "glass_ordered",
+  "glass_ready",
+  "installation_scheduled",
+  "installed",
 ]);
 
-// OS type: new project vs maintenance/repair
-export const osTypeEnum = pgEnum("os_type", [
-  "new",          // Standard new project OS
-  "maintenance",  // Maintenance/repair OS (shorter flow)
-]);
-
-// Dimension verification status on the OS
 export const dimensionStatusEnum = pgEnum("dimension_status", [
-  "unofficial",    // Customer-provided or estimated dimensions
-  "verified",      // Official dimensions from measurement visit
-  "discrepancy",   // Official dimensions differ >5cm from quoted — re-quote needed
+  "unofficial",
+  "verified",
+  "discrepancy",
 ]);
 
-// Orçamento line item dimension status
-export const lineItemDimensionStatusEnum = pgEnum("line_item_dimension_status", [
-  "unofficial",   // From customer sketch
-  "verified",     // From official measurement
-  "discrepancy",  // Differs >5cm from quoted — needs re-quote
+export const lineItemSourceEnum = pgEnum("line_item_source", [
+  "manual",
+  "templated",
 ]);
 
-// Installment payment status
+export const measurementVisitTypeEnum = pgEnum("measurement_visit_type", [
+  "pre_sale",
+  "post_acceptance",
+]);
+
 export const installmentStatusEnum = pgEnum("installment_status", [
-  "aberto",    // Open / not yet due
-  "atrasado",  // Overdue
-  "ok",        // Paid
+  "aberto",
+  "atrasado",
+  "ok",
 ]);
 
-// Payment method
 export const paymentMethodEnum = pgEnum("payment_method", [
-  "a_vista",  // Cash / bank transfer
-  "boleto",   // Bank slip
-  "credito",  // Credit card
-  "cheque",   // Check
-  "debito",   // Debit
+  "a_vista",
+  "boleto",
+  "credito",
+  "cheque",
+  "debito",
 ]);
 
-// Supplier order status
 export const supplierOrderStatusEnum = pgEnum("supplier_order_status", [
-  "placed",       // Order placed with supplier
-  "confirmed",    // Supplier confirmed, pedido number received
-  "sinal_paid",   // Deposit paid
-  "ready",        // Material ready for pickup/delivery
-  "saldo_paid",   // Balance paid
-  "received",     // Material received at factory
+  "placed",
+  "confirmed",
+  "sinal_paid",
+  "ready",
+  "saldo_paid",
+  "received",
 ]);
 
-// Material category
+export const supplierPaymentTypeEnum = pgEnum("supplier_payment_type", [
+  "sinal",
+  "saldo",
+  "full",
+]);
+
 export const materialCategoryEnum = pgEnum("material_category", [
   "aluminum",
   "glass",
@@ -125,36 +130,46 @@ export const materialCategoryEnum = pgEnum("material_category", [
   "hardware",
 ]);
 
-// Supplier order payment type
-export const supplierPaymentTypeEnum = pgEnum("supplier_payment_type", [
-  "sinal",  // Deposit payment
-  "saldo",  // Balance payment
-  "full",   // Full payment (small items)
+export const templateParamTypeEnum = pgEnum("template_param_type", [
+  "dimension",
+  "material",
+  "spec",
+  "option",
 ]);
 
-// Installation task status
+export const bomFormulaTypeEnum = pgEnum("bom_formula_type", [
+  "fixed_quantity",
+  "per_width",
+  "per_height",
+  "perimeter",
+  "area",
+]);
+
 export const installationTaskStatusEnum = pgEnum("installation_task_status", [
-  "scheduled",    // Scheduled for a date
-  "in_progress",  // Installer on site
-  "completed",   // Task finished
-  "continued",   // CONTINUA... — needs another visit
-  "cancelled",   // Cancelled
+  "scheduled",
+  "in_progress",
+  "completed",
+  "continued",
+  "cancelled",
 ]);
 
-// Notification severity
+export const employeeRoleEnum = pgEnum("employee_role", [
+  "installer",
+  "helper",
+  "fabrication",
+]);
+
 export const notificationSeverityEnum = pgEnum("notification_severity", [
-  "info",     // Something happened, no action needed
-  "warning",  // Needs attention within ~1 week
-  "alert",    // Blocking or past deadline — cannot dismiss
+  "info",
+  "warning",
+  "alert",
 ]);
 
-// Notification trigger type
 export const notificationTriggerEnum = pgEnum("notification_trigger", [
-  "state_transition",  // Something changed in the workflow
-  "time_proximity",    // Something is approaching or past a deadline
+  "state_transition",
+  "time_proximity",
 ]);
 
-// User role
 export const userRoleEnum = pgEnum("user_role", [
   "sales",
   "finance",
@@ -164,423 +179,704 @@ export const userRoleEnum = pgEnum("user_role", [
   "ceo",
 ]);
 
-// Deviation type
+export const workflowTaskTypeEnum = pgEnum("workflow_task_type", [
+  "identify_first_payment",
+  "create_os",
+  "sales_review_os",
+  "perform_measurement",
+  "place_material_orders",
+  "pay_supplier",
+  "order_glass",
+  "schedule_installation",
+  "collect_installment",
+  "resolve_deviation",
+]);
+
+export const workflowTaskStatusEnum = pgEnum("workflow_task_status", [
+  "open",
+  "in_progress",
+  "completed",
+  "cancelled",
+]);
+
 export const deviationTypeEnum = pgEnum("deviation_type", [
-  "missing_material",     // Missing material at installation
-  "defective_material",   // Defective or damaged material
-  "customer_change",      // Customer change order (aditamento)
-  "payment_dispute",      // Payment dispute or withholding
-  "operational_delay",    // Multi-day job / site not ready
+  "missing_material",
+  "defective_material",
+  "customer_change",
+  "payment_dispute",
+  "operational_delay",
 ]);
 
 // ─────────────────────────────────────────────
 // TABLES
 // ─────────────────────────────────────────────
 
-// ─── Customers ──────────────────────────────
-
-export const customers = pgTable("customers", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  name: varchar("name", { length: 255 }).notNull(),
-  documentType: varchar("document_type", { length: 10 }),  // "CPF" or "CNPJ"
-  documentNumber: varchar("document_number", { length: 20 }), // actual CPF/CNPJ
-  email: varchar("email", { length: 255 }),
-  phone: varchar("phone", { length: 50 }),
-  address: text("address"),             // Customer's home/business address
-  notes: text("notes"),                 // Free-text notes about this customer
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  // Full-text search index for customer name deduplication
-  nameSearchIdx: index("customers_name_search_idx").using("gin", table.name),
-  // Unique constraint on document number when provided
-  documentIdx: uniqueIndex("customers_document_idx").on(table.documentNumber),
-}));
-
-// ─── Projects (Vendas) ─────────────────────
-
-export const projects = pgTable("projects", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  saleNumber: integer("sale_number").unique(), // Sequential sale number assigned by Finance
-  customerId: uuid("customer_id").references(() => customers.id).notNull(),
-  siteAddress: text("site_address"),           // OBRA — where installation happens (can differ from customer address)
-  contactName: varchar("contact_name", { length: 255 }), // A/C — project-level contact
-  contactPhone: varchar("contact_phone", { length: 50 }),
-  status: projectStatusEnum("status").default("quotation").notNull(),
-  totalValue: numeric("total_value", { precision: 12, scale: 2 }), // Set when orçamento accepted
-  deliveryLeadTimeDays: integer("delivery_lead_time_days"), // From orçamento terms (e.g., 30-35)
-  validityDays: integer("validity_days").default(10), // Orçamento validity in business days
-  notes: text("notes"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  customerIdx: index("projects_customer_idx").on(table.customerId),
-  statusIdx: index("projects_status_idx").on(table.status),
-}));
-
-// ─── Orçamentos (Quotations) ───────────────
-
-export const orcamentos = pgTable("orcamentos", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  projectId: uuid("project_id").references(() => projects.id).notNull(),
-  versionLabel: varchar("version_label", { length: 100 }), // "Rev 01", "Opção Preta", etc.
-  status: orcamentoStatusEnum("status").default("draft").notNull(),
-  emissionDate: date("emission_date"),           // 1ª EMISSÃO date
-  revisionDate: date("revision_date"),           // REVISÃO date
-  totalValue: numeric("total_value", { precision: 12, scale: 2 }),
-  totalValueInWords: text("total_value_in_words"), // Valor por extenso
-  deliveryLeadTimeDays: integer("delivery_lead_time_days"), // 30-35 days
-  generalTerms: jsonb("general_terms"),          // Standard terms stored as JSON
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  projectIdx: index("orcamentos_project_idx").on(table.projectId),
-  statusIdx: index("orcamentos_status_idx").on(table.status),
-}));
-
-// ─── Orçamento Line Items ──────────────────
-
-export const orcamentoItems = pgTable("orcamento_items", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  orcamentoId: uuid("orcamento_id").references(() => orcamentos.id, { onDelete: "cascade" }).notNull(),
-  lineNumber: numeric("line_number", { precision: 5, scale: 1 }).notNull(), // 1.1, 1.2, etc.
-  local: varchar("local", { length: 255 }),     // Room/location: "SALA GOURMET"
-  descricao: text("descricao").notNull(),        // Free-text description
-  linha: varchar("linha", { length: 100 }),      // Profile system: "Suprema", "Tub."
-  tratamento: varchar("tratamento", { length: 255 }), // Surface finish
-  vidro: varchar("vidro", { length: 255 }),      // Glass specification
-  medida: varchar("medida", { length: 50 }),    // W × H in meters: "2,10 x 2,20"
-  widthMm: integer("width_mm"),                  // Parsed width for BOM calculation
-  heightMm: integer("height_mm"),                 // Parsed height for BOM calculation
-  dimensionStatus: lineItemDimensionStatusEnum("dimension_status").default("unofficial"),
-  quantidade: integer("quantidade").default(1).notNull(),
-  precoUnitario: numeric("preco_unitario", { precision: 12, scale: 2 }), // All-in price per unit
-  precoTotal: numeric("preco_total", { precision: 12, scale: 2 }),  // precoUnitario × quantidade
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  orcamentoIdx: index("orcamento_items_orcamento_idx").on(table.orcamentoId),
-}));
-
-// ─── Orçamento Payment Terms ───────────────
-
-export const orcamentoPaymentTerms = pgTable("orcamento_payment_terms", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  orcamentoId: uuid("orcamento_id").references(() => orcamentos.id, { onDelete: "cascade" }).notNull(),
-  label: varchar("label", { length: 50 }),     // "50% sinal", "25% in 30 days", etc.
-  percentage: numeric("percentage", { precision: 5, scale: 2 }), // 50.00, 25.00
-  dueDays: integer("due_days"),                 // Days after acceptance: 0=sinal, 30, 60, etc.
-  sortOrder: integer("sort_order").notNull(),   // Display order
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  orcamentoIdx: index("orcamento_payment_terms_orcamento_idx").on(table.orcamentoId),
-}));
-
-// ─── OS (Ordem de Serviço) ─────────────────
-
-export const serviceOrders = pgTable("service_orders", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  projectId: uuid("project_id").references(() => projects.id).notNull(),
-  osNumber: integer("os_number").unique(),     // Sequential OS number (currently paper-only, now digitized)
-  type: osTypeEnum("type").default("new").notNull(),
-  status: osStatusEnum("status").default("created").notNull(),
-  dimensionStatus: dimensionStatusEnum("dimension_status").default("unofficial").notNull(),
-  stampedAt: timestamp("stamped_at"),           // When Admin stamped the OS
-  stampedById: uuid("stamped_by_id"),           // Who stamped it
-  reviewedById: uuid("reviewed_by_id"),         // Sales person who reviewed
-  reviewedAt: timestamp("reviewed_at"),
-  notes: text("notes"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  projectIdx: index("service_orders_project_idx").on(table.projectId),
-  statusIdx: index("service_orders_status_idx").on(table.status),
-}));
-
-// ─── OS Line Items ─────────────────────────
-
-export const serviceOrderItems = pgTable("service_order_items", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  serviceOrderId: uuid("service_order_id").references(() => serviceOrders.id, { onDelete: "cascade" }).notNull(),
-  lineNumber: numeric("line_number", { precision: 5, scale: 1 }).notNull(),
-  local: varchar("local", { length: 255 }),
-  descricao: text("descricao").notNull(),        // Free-text — same as orçamento
-  linha: varchar("linha", { length: 100 }),
-  tratamento: varchar("tratamento", { length: 255 }),
-  vidro: varchar("vidro", { length: 255 }),
-  medida: varchar("medida", { length: 50 }),
-  widthMm: integer("width_mm"),
-  heightMm: integer("height_mm"),
-  dimensionStatus: lineItemDimensionStatusEnum("dimension_status").default("unofficial"),
-  quantidade: integer("quantidade").default(1).notNull(),
-  isMaintenanceTask: boolean("is_maintenance_task").default(false), // True for maintenance OS scoped work
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  serviceOrderIdx: index("service_order_items_so_idx").on(table.serviceOrderId),
-}));
-
-// ─── Installments (Customer Receivables) ───
-
-export const installments = pgTable("installments", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  projectId: uuid("project_id").references(() => projects.id).notNull(),
-  label: varchar("label", { length: 50 }).notNull(),   // "1/3", "2/2-1", "sinal"
-  value: numeric("value", { precision: 12, scale: 2 }).notNull(),
-  dueDate: date("due_date"),                     // When the installment is due
-  paidAt: timestamp("paid_at"),                  // When it was actually paid
-  status: installmentStatusEnum("status").default("aberto").notNull(),
-  paymentMethod: paymentMethodEnum("payment_method"),
-  sortOrder: integer("sort_order").notNull(),    // Display order
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  projectIdx: index("installments_project_idx").on(table.projectId),
-  statusIdx: index("installments_status_idx").on(table.status),
-}));
-
-// ─── Suppliers ─────────────────────────────
-
-export const suppliers = pgTable("suppliers", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  name: varchar("name", { length: 255 }).notNull(),
-  category: varchar("category", { length: 100 }), // "Alumínio", "Vidro", "Pedra", "Ferragem"
-  contactName: varchar("contact_name", { length: 255 }),
-  phone: varchar("phone", { length: 50 }),
-  email: varchar("email", { length: 255 }),
-  address: text("address"),
-  isCore: boolean("is_core").default(false),     // Core supplier (constant) vs rotating
-  creditTermsDays: integer("credit_terms_days"), // e.g., 30 for "pay within 30 days"
-  notes: text("notes"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  nameIdx: index("suppliers_name_idx").on(table.name),
-  categoryIdx: index("suppliers_category_idx").on(table.category),
-}));
-
-// ─── Supplier Orders ────────────────────────
-
-export const supplierOrders = pgTable("supplier_orders", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  projectId: uuid("project_id").references(() => projects.id).notNull(),
-  supplierId: uuid("supplier_id").references(() => suppliers.id).notNull(),
-  externalPedidoNumber: varchar("external_pedido_number", { length: 100 }), // Supplier's own reference
-  status: supplierOrderStatusEnum("status").default("placed").notNull(),
-  orderDate: date("order_date"),                  // When order was placed
-  confirmedDate: date("confirmed_date"),           // When supplier confirmed
-  expectedDeliveryDate: date("expected_delivery_date"), // Supplier's estimate
-  receivedDate: date("received_date"),             // When received at factory
-  notes: text("notes"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  projectIdx: index("supplier_orders_project_idx").on(table.projectId),
-  supplierIdx: index("supplier_orders_supplier_idx").on(table.supplierId),
-  statusIdx: index("supplier_orders_status_idx").on(table.status),
-}));
-
-// ─── Supplier Order Items ───────────────────
-
-export const supplierOrderItems = pgTable("supplier_order_items", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  supplierOrderId: uuid("supplier_order_id").references(() => supplierOrders.id, { onDelete: "cascade" }).notNull(),
-  materialId: uuid("material_id").references(() => materials.id), // Links to catalog material
-  description: text("description").notNull(),    // Free-text description of what's ordered
-  quantity: numeric("quantity", { precision: 10, scale: 2 }).notNull(),
-  unit: varchar("unit", { length: 20 }),         // "m", "m²", "un"
-  unitPrice: numeric("unit_price", { precision: 12, scale: 2 }),
-  totalPrice: numeric("total_price", { precision: 12, scale: 2 }),
-  treatment: varchar("treatment", { length: 255 }), // Surface treatment for aluminum
-  dimensions: varchar("dimensions", { length: 100 }), // Specific dimensions ordered
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  supplierOrderIdx: index("supplier_order_items_so_idx").on(table.supplierOrderId),
-}));
-
-// ─── Supplier Order Payments ─────────────────
-
-export const supplierPayments = pgTable("supplier_payments", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  supplierOrderId: uuid("supplier_order_id").references(() => supplierOrders.id).notNull(),
-  type: supplierPaymentTypeEnum("type").notNull(), // "sinal", "saldo", or "full"
-  value: numeric("value", { precision: 12, scale: 2 }).notNull(),
-  paidAt: timestamp("paid_at"),                   // When payment was made
-  paymentMethod: paymentMethodEnum("payment_method"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  supplierOrderIdx: index("supplier_payments_so_idx").on(table.supplierOrderId),
-}));
-
-// ─── Product Catalog: LINHAS ───────────────
-
-export const linhas = pgTable("linhas", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  name: varchar("name", { length: 100 }).notNull().unique(), // "Suprema", "Tubular", "Gold"
-  description: text("description"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
-
-// ─── Product Catalog: Materials ─────────────
-
-export const materials = pgTable("materials", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  code: varchar("code", { length: 50 }).notNull(),  // "U681", "TG 2\""
-  name: varchar("name", { length: 255 }).notNull(), // "Perfil U", "Vidro temperado"
-  category: materialCategoryEnum("category").notNull(),
-  linhaId: uuid("linha_id").references(() => linhas.id), // Null for glass/stone/hardware; set for aluminum profiles
-  unitOfMeasure: varchar("unit_of_measure", { length: 20 }), // "m", "m²", "un"
-  crossSectionDimensions: varchar("cross_section", { length: 100 }), // For aluminum profiles
-  weightPerMeter: numeric("weight_per_meter", { precision: 8, scale: 4 }), // For aluminum
-  isActive: boolean("is_active").default(true),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  codeIdx: uniqueIndex("materials_code_idx").on(table.code),
-  categoryIdx: index("materials_category_idx").on(table.category),
-  linhaIdx: index("materials_linha_idx").on(table.linhaId),
-}));
-
-// ─── Product Catalog: Specifications ────────
-
-export const materialSpecs = pgTable("material_specs", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  materialId: uuid("material_id").references(() => materials.id, { onDelete: "cascade" }).notNull(),
-  specName: varchar("spec_name", { length: 255 }).notNull(), // "Pintura eletrostática preta", "Temperado 6mm"
-  specType: varchar("spec_type", { length: 50 }), // "surface_treatment", "thickness", "finish"
-  pricePerUnit: numeric("price_per_unit", { precision: 12, scale: 2 }), // Current price
-  supplierId: uuid("supplier_id").references(() => suppliers.id), // Which supplier offers this
-  isActive: boolean("is_active").default(true),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  materialIdx: index("material_specs_material_idx").on(table.materialId),
-  supplierIdx: index("material_specs_supplier_idx").on(table.supplierId),
-}));
-
-// ─── Product Templates (BOM Generators) ─────
-
-export const productTemplates = pgTable("product_templates", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  name: varchar("name", { length: 255 }).notNull(),       // "Janela de Correr 2 Folhas"
-  linhaId: uuid("linha_id").references(() => linhas.id).notNull(), // LINHA determines profiles
-  description: varchar("description", { length: 500 }),    // Brief template description
-  isActive: boolean("is_active").default(true),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  linhaIdx: index("product_templates_linha_idx").on(table.linhaId),
-}));
-
-// Template parameters (what inputs the template accepts)
-export const productTemplateParams = pgTable("product_template_params", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  templateId: uuid("template_id").references(() => productTemplates.id, { onDelete: "cascade" }).notNull(),
-  paramName: varchar("param_name", { length: 100 }).notNull(), // "width", "height", "glass_type"
-  paramType: varchar("param_type", { length: 50 }).notNull(), // "dimension", "material", "spec"
-  required: boolean("required").default(true),
-  sortOrder: integer("sort_order").notNull(),
-}, (table) => ({
-  templateIdx: index("product_template_params_template_idx").on(table.templateId),
-}));
-
-// Template BOM entries (what materials the template generates)
-export const productTemplateBom = pgTable("product_template_bom", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  templateId: uuid("template_id").references(() => productTemplates.id, { onDelete: "cascade" }).notNull(),
-  materialId: uuid("material_id").references(() => materials.id).notNull(),
-  specId: uuid("spec_id").references(() => materialSpecs.id),  // Which spec variant
-  quantityFormula: varchar("quantity_formula", { length: 500 }), // e.g., "2 * H", "W * H - clearance"
-  unitOfMeasure: varchar("unit_of_measure", { length: 20 }),    // "m", "m²", "un"
-  notes: text("notes"),
-  sortOrder: integer("sort_order").notNull(),
-}, (table) => ({
-  templateIdx: index("product_template_bom_template_idx").on(table.templateId),
-}));
-
-// ─── Installation Tasks ─────────────────────
-
-export const installationTasks = pgTable("installation_tasks", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  projectId: uuid("project_id").references(() => projects.id).notNull(),
-  scheduledDate: date("scheduled_date").notNull(),
-  installerName: varchar("installer_name", { length: 255 }).notNull(),   // Instalador
-  helperName: varchar("helper_name", { length: 255 }),                   // Ajudante
-  vehicle: varchar("vehicle", { length: 100 }),                           // "Kombi", "Saveiro", "Gol"
-  status: installationTaskStatusEnum("status").default("scheduled").notNull(),
-  description: text("description"),                // What to bring, what to pick up
-  conclusionNotes: text("conclusion_notes"),        // Completion notes or "CONTINUA..."
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  projectIdx: index("installation_tasks_project_idx").on(table.projectId),
-  dateIdx: index("installation_tasks_date_idx").on(table.scheduledDate),
-  statusIdx: index("installation_tasks_status_idx").on(table.status),
-}));
-
-// ─── Deviations ─────────────────────────────
-
-export const deviations = pgTable("deviations", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  projectId: uuid("project_id").references(() => projects.id).notNull(),
-  type: deviationTypeEnum("type").notNull(),
-  description: text("description").notNull(),
-  resolution: text("resolution"),
-  resolvedAt: timestamp("resolved_at"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  projectIdx: index("deviations_project_idx").on(table.projectId),
-  typeIdx: index("deviations_type_idx").on(table.type),
-}));
-
-// ─── Notifications ───────────────────────────
-
-export const notifications = pgTable("notifications", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  projectId: uuid("project_id").references(() => projects.id),
-  targetRole: userRoleEnum("target_role").notNull(),
-  severity: notificationSeverityEnum("severity").notNull(),
-  trigger: notificationTriggerEnum("trigger").notNull(),
-  message: text("message").notNull(),
-  isRead: boolean("is_read").default(false).notNull(),
-  isDismissed: boolean("is_dismissed").default(false).notNull(),
-  isAcknowledged: boolean("is_acknowledged").default(false), // For alerts — snoozes 24h
-  acknowledgedAt: timestamp("acknowledged_at"),
-  autoResolvedAt: timestamp("auto_resolved_at"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  projectIdx: index("notifications_project_idx").on(table.projectId),
-  targetRoleIdx: index("notifications_target_role_idx").on(table.targetRole),
-  severityIdx: index("notifications_severity_idx").on(table.severity),
-  unreadIdx: index("notifications_unread_idx").on(table.isRead, table.isDismissed),
-}));
-
-// ─── Users ──────────────────────────────────
+export const customers = pgTable(
+  "customers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    normalizedName: varchar("normalized_name", { length: 255 }).notNull(),
+    documentType: customerDocumentTypeEnum("document_type"),
+    documentNumber: varchar("document_number", { length: 20 }),
+    email: varchar("email", { length: 255 }),
+    phone: varchar("phone", { length: 50 }),
+    address: text("address"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    normalizedNameIdx: index("customers_normalized_name_idx").on(table.normalizedName),
+    documentIdx: uniqueIndex("customers_document_idx").on(table.documentNumber),
+  }),
+);
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: varchar("name", { length: 255 }).notNull(),
   email: varchar("email", { length: 255 }).notNull().unique(),
-  role: userRoleEnum("role").notNull(),
-  isActive: boolean("is_active").default(true),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-// ─── File Attachments ───────────────────────
+export const userRoles = pgTable(
+  "user_roles",
+  {
+    userId: uuid("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    role: userRoleEnum("role").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.role] }),
+    roleIdx: index("user_roles_role_idx").on(table.role),
+  }),
+);
 
-export const attachments = pgTable("attachments", {
+export const employees = pgTable("employees", {
   id: uuid("id").defaultRandom().primaryKey(),
-  entityType: varchar("entity_type", { length: 50 }).notNull(), // "project", "service_order", "supplier_order"
-  entityId: uuid("entity_id").notNull(),
-  fileName: varchar("file_name", { length: 500 }).notNull(),
-  fileUrl: text("file_url").notNull(),          // UploadThing URL
-  fileType: varchar("file_type", { length: 50 }), // "drawing", "photo", "receipt", "other"
-  fileSize: integer("file_size"),                 // Bytes
-  uploadedById: uuid("uploaded_by_id").references(() => users.id),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-}, (table) => ({
-  entityIdx: index("attachments_entity_idx").on(table.entityType, table.entityId),
-}));
+  name: varchar("name", { length: 255 }).notNull(),
+  role: employeeRoleEnum("role").notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const vehicles = pgTable("vehicles", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: varchar("name", { length: 100 }).notNull().unique(),
+  plate: varchar("plate", { length: 20 }),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const projects = pgTable(
+  "projects",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    type: projectTypeEnum("type").default("new_work").notNull(),
+    saleNumber: integer("sale_number").unique(),
+    customerId: uuid("customer_id")
+      .references(() => customers.id)
+      .notNull(),
+    acceptedOrcamentoId: uuid("accepted_orcamento_id").references(() => orcamentos.id),
+    siteAddress: text("site_address"),
+    contactName: varchar("contact_name", { length: 255 }),
+    contactPhone: varchar("contact_phone", { length: 50 }),
+    status: projectStatusEnum("status").default("quoting").notNull(),
+    totalValue: numeric("total_value", { precision: 12, scale: 2 }),
+    firstPaymentIdentifiedAt: timestamp("first_payment_identified_at", { withTimezone: true }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    customerIdx: index("projects_customer_idx").on(table.customerId),
+    statusIdx: index("projects_status_idx").on(table.status),
+    typeIdx: index("projects_type_idx").on(table.type),
+  }),
+);
+
+export const orcamentos = pgTable(
+  "orcamentos",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .references(() => projects.id, { onDelete: "cascade" })
+      .notNull(),
+    versionLabel: varchar("version_label", { length: 100 }),
+    status: orcamentoStatusEnum("status").default("draft").notNull(),
+    emissionDate: date("emission_date"),
+    revisionDate: date("revision_date"),
+    validUntilDate: date("valid_until_date"),
+    totalValue: numeric("total_value", { precision: 12, scale: 2 }),
+    deliveryLeadTimeDays: integer("delivery_lead_time_days"),
+    termsVersion: integer("terms_version").default(1).notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("orcamentos_project_idx").on(table.projectId),
+    statusIdx: index("orcamentos_status_idx").on(table.status),
+  }),
+);
+
+export const linhas = pgTable("linhas", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: varchar("name", { length: 100 }).notNull().unique(),
+  description: text("description"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const materials = pgTable(
+  "materials",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    code: varchar("code", { length: 50 }).notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    category: materialCategoryEnum("category").notNull(),
+    linhaId: uuid("linha_id").references(() => linhas.id),
+    unitOfMeasure: varchar("unit_of_measure", { length: 20 }),
+    crossSectionDimensions: varchar("cross_section_dimensions", { length: 100 }),
+    weightPerMeter: numeric("weight_per_meter", { precision: 8, scale: 4 }),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    codeIdx: uniqueIndex("materials_code_idx").on(table.code),
+    categoryIdx: index("materials_category_idx").on(table.category),
+    linhaIdx: index("materials_linha_idx").on(table.linhaId),
+  }),
+);
+
+export const suppliers = pgTable(
+  "suppliers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    category: varchar("category", { length: 100 }),
+    contactName: varchar("contact_name", { length: 255 }),
+    phone: varchar("phone", { length: 50 }),
+    email: varchar("email", { length: 255 }),
+    address: text("address"),
+    isCore: boolean("is_core").default(false).notNull(),
+    creditTermsDays: integer("credit_terms_days"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    nameIdx: index("suppliers_name_idx").on(table.name),
+    categoryIdx: index("suppliers_category_idx").on(table.category),
+  }),
+);
+
+export const materialSpecs = pgTable(
+  "material_specs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    materialId: uuid("material_id")
+      .references(() => materials.id, { onDelete: "cascade" })
+      .notNull(),
+    supplierId: uuid("supplier_id").references(() => suppliers.id),
+    specName: varchar("spec_name", { length: 255 }).notNull(),
+    specType: varchar("spec_type", { length: 50 }),
+    pricePerUnit: numeric("price_per_unit", { precision: 12, scale: 2 }),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    materialIdx: index("material_specs_material_idx").on(table.materialId),
+    supplierIdx: index("material_specs_supplier_idx").on(table.supplierId),
+  }),
+);
+
+export const productTemplates = pgTable(
+  "product_templates",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    linhaId: uuid("linha_id")
+      .references(() => linhas.id)
+      .notNull(),
+    description: varchar("description", { length: 500 }),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    linhaIdx: index("product_templates_linha_idx").on(table.linhaId),
+  }),
+);
+
+export const productTemplateParams = pgTable(
+  "product_template_params",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    templateId: uuid("template_id")
+      .references(() => productTemplates.id, { onDelete: "cascade" })
+      .notNull(),
+    paramName: varchar("param_name", { length: 100 }).notNull(),
+    paramType: templateParamTypeEnum("param_type").notNull(),
+    required: boolean("required").default(true).notNull(),
+    sortOrder: integer("sort_order").notNull(),
+  },
+  (table) => ({
+    templateIdx: index("product_template_params_template_idx").on(table.templateId),
+  }),
+);
+
+export const productTemplateBom = pgTable(
+  "product_template_bom",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    templateId: uuid("template_id")
+      .references(() => productTemplates.id, { onDelete: "cascade" })
+      .notNull(),
+    materialId: uuid("material_id")
+      .references(() => materials.id)
+      .notNull(),
+    specId: uuid("spec_id").references(() => materialSpecs.id),
+    formulaType: bomFormulaTypeEnum("formula_type").notNull(),
+    fixedQuantity: numeric("fixed_quantity", { precision: 10, scale: 4 }),
+    quantityMultiplier: numeric("quantity_multiplier", { precision: 10, scale: 4 }).default("1").notNull(),
+    widthAdjustmentMm: integer("width_adjustment_mm").default(0).notNull(),
+    heightAdjustmentMm: integer("height_adjustment_mm").default(0).notNull(),
+    unitOfMeasure: varchar("unit_of_measure", { length: 20 }),
+    notes: text("notes"),
+    sortOrder: integer("sort_order").notNull(),
+  },
+  (table) => ({
+    templateIdx: index("product_template_bom_template_idx").on(table.templateId),
+  }),
+);
+
+export const orcamentoItems = pgTable(
+  "orcamento_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orcamentoId: uuid("orcamento_id")
+      .references(() => orcamentos.id, { onDelete: "cascade" })
+      .notNull(),
+    sectionNumber: integer("section_number").notNull(),
+    itemNumber: integer("item_number").notNull(),
+    source: lineItemSourceEnum("source").default("manual").notNull(),
+    productTemplateId: uuid("product_template_id").references(() => productTemplates.id),
+    linhaId: uuid("linha_id").references(() => linhas.id),
+    local: varchar("local", { length: 255 }),
+    descricao: text("descricao").notNull(),
+    tratamentoSnapshot: varchar("tratamento_snapshot", { length: 255 }),
+    vidroSnapshot: varchar("vidro_snapshot", { length: 255 }),
+    quotedMeasureText: varchar("quoted_measure_text", { length: 50 }),
+    quotedWidthMm: integer("quoted_width_mm"),
+    quotedHeightMm: integer("quoted_height_mm"),
+    dimensionStatus: dimensionStatusEnum("dimension_status").default("unofficial").notNull(),
+    quantity: integer("quantity").default(1).notNull(),
+    unitPrice: numeric("unit_price", { precision: 12, scale: 2 }),
+    totalPrice: numeric("total_price", { precision: 12, scale: 2 }),
+    templateInput: jsonb("template_input"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    orcamentoIdx: index("orcamento_items_orcamento_idx").on(table.orcamentoId),
+    templateIdx: index("orcamento_items_template_idx").on(table.productTemplateId),
+  }),
+);
+
+export const orcamentoItemBomRows = pgTable(
+  "orcamento_item_bom_rows",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orcamentoItemId: uuid("orcamento_item_id")
+      .references(() => orcamentoItems.id, { onDelete: "cascade" })
+      .notNull(),
+    materialId: uuid("material_id")
+      .references(() => materials.id)
+      .notNull(),
+    materialSpecId: uuid("material_spec_id").references(() => materialSpecs.id),
+    quantity: numeric("quantity", { precision: 12, scale: 4 }).notNull(),
+    unitOfMeasure: varchar("unit_of_measure", { length: 20 }),
+    notes: text("notes"),
+  },
+  (table) => ({
+    itemIdx: index("orcamento_item_bom_rows_item_idx").on(table.orcamentoItemId),
+  }),
+);
+
+export const orcamentoPaymentTerms = pgTable(
+  "orcamento_payment_terms",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orcamentoId: uuid("orcamento_id")
+      .references(() => orcamentos.id, { onDelete: "cascade" })
+      .notNull(),
+    label: varchar("label", { length: 50 }),
+    percentage: numeric("percentage", { precision: 5, scale: 2 }),
+    dueDays: integer("due_days"),
+    sortOrder: integer("sort_order").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    orcamentoIdx: index("orcamento_payment_terms_orcamento_idx").on(table.orcamentoId),
+  }),
+);
+
+export const serviceOrders = pgTable(
+  "service_orders",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .references(() => projects.id, { onDelete: "cascade" })
+      .notNull()
+      .unique(),
+    sourceOrcamentoId: uuid("source_orcamento_id").references(() => orcamentos.id),
+    osNumber: integer("os_number").unique(),
+    status: osStatusEnum("status").default("created").notNull(),
+    dimensionStatus: dimensionStatusEnum("dimension_status").default("unofficial").notNull(),
+    stampedAt: timestamp("stamped_at", { withTimezone: true }),
+    stampedByUserId: uuid("stamped_by_user_id").references(() => users.id),
+    reviewedByUserId: uuid("reviewed_by_user_id").references(() => users.id),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    ceoExceptionApprovedByUserId: uuid("ceo_exception_approved_by_user_id").references(() => users.id),
+    ceoExceptionNotes: text("ceo_exception_notes"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("service_orders_project_idx").on(table.projectId),
+    statusIdx: index("service_orders_status_idx").on(table.status),
+  }),
+);
+
+export const serviceOrderItems = pgTable(
+  "service_order_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    serviceOrderId: uuid("service_order_id")
+      .references(() => serviceOrders.id, { onDelete: "cascade" })
+      .notNull(),
+    sourceOrcamentoItemId: uuid("source_orcamento_item_id").references(() => orcamentoItems.id),
+    sectionNumber: integer("section_number").notNull(),
+    itemNumber: integer("item_number").notNull(),
+    source: lineItemSourceEnum("source").default("manual").notNull(),
+    productTemplateId: uuid("product_template_id").references(() => productTemplates.id),
+    linhaId: uuid("linha_id").references(() => linhas.id),
+    local: varchar("local", { length: 255 }),
+    descricao: text("descricao").notNull(),
+    tratamentoSnapshot: varchar("tratamento_snapshot", { length: 255 }),
+    vidroSnapshot: varchar("vidro_snapshot", { length: 255 }),
+    quotedMeasureText: varchar("quoted_measure_text", { length: 50 }),
+    officialMeasureText: varchar("official_measure_text", { length: 50 }),
+    quotedWidthMm: integer("quoted_width_mm"),
+    quotedHeightMm: integer("quoted_height_mm"),
+    officialWidthMm: integer("official_width_mm"),
+    officialHeightMm: integer("official_height_mm"),
+    dimensionStatus: dimensionStatusEnum("dimension_status").default("unofficial").notNull(),
+    quantity: integer("quantity").default(1).notNull(),
+    isMaintenanceTask: boolean("is_maintenance_task").default(false).notNull(),
+    templateInput: jsonb("template_input"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    serviceOrderIdx: index("service_order_items_so_idx").on(table.serviceOrderId),
+    templateIdx: index("service_order_items_template_idx").on(table.productTemplateId),
+  }),
+);
+
+export const serviceOrderItemBomRows = pgTable(
+  "service_order_item_bom_rows",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    serviceOrderItemId: uuid("service_order_item_id")
+      .references(() => serviceOrderItems.id, { onDelete: "cascade" })
+      .notNull(),
+    materialId: uuid("material_id")
+      .references(() => materials.id)
+      .notNull(),
+    materialSpecId: uuid("material_spec_id").references(() => materialSpecs.id),
+    quantity: numeric("quantity", { precision: 12, scale: 4 }).notNull(),
+    unitOfMeasure: varchar("unit_of_measure", { length: 20 }),
+    notes: text("notes"),
+  },
+  (table) => ({
+    itemIdx: index("service_order_item_bom_rows_item_idx").on(table.serviceOrderItemId),
+  }),
+);
+
+export const measurementVisits = pgTable(
+  "measurement_visits",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .references(() => projects.id, { onDelete: "cascade" })
+      .notNull(),
+    serviceOrderId: uuid("service_order_id").references(() => serviceOrders.id, { onDelete: "cascade" }),
+    type: measurementVisitTypeEnum("type").notNull(),
+    performedByUserId: uuid("performed_by_user_id").references(() => users.id),
+    visitedAt: timestamp("visited_at", { withTimezone: true }).notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("measurement_visits_project_idx").on(table.projectId),
+    serviceOrderIdx: index("measurement_visits_so_idx").on(table.serviceOrderId),
+  }),
+);
+
+export const measurementVisitItems = pgTable(
+  "measurement_visit_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    measurementVisitId: uuid("measurement_visit_id")
+      .references(() => measurementVisits.id, { onDelete: "cascade" })
+      .notNull(),
+    orcamentoItemId: uuid("orcamento_item_id").references(() => orcamentoItems.id),
+    serviceOrderItemId: uuid("service_order_item_id").references(() => serviceOrderItems.id),
+    quotedWidthMm: integer("quoted_width_mm"),
+    quotedHeightMm: integer("quoted_height_mm"),
+    measuredWidthMm: integer("measured_width_mm"),
+    measuredHeightMm: integer("measured_height_mm"),
+    dimensionStatus: dimensionStatusEnum("dimension_status").notNull(),
+    notes: text("notes"),
+  },
+  (table) => ({
+    visitIdx: index("measurement_visit_items_visit_idx").on(table.measurementVisitId),
+  }),
+);
+
+export const installments = pgTable(
+  "installments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .references(() => projects.id, { onDelete: "cascade" })
+      .notNull(),
+    sourcePaymentTermId: uuid("source_payment_term_id").references(() => orcamentoPaymentTerms.id),
+    label: varchar("label", { length: 50 }).notNull(),
+    value: numeric("value", { precision: 12, scale: 2 }).notNull(),
+    dueDate: date("due_date").notNull(),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    status: installmentStatusEnum("status").default("aberto").notNull(),
+    paymentMethod: paymentMethodEnum("payment_method"),
+    sortOrder: integer("sort_order").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("installments_project_idx").on(table.projectId),
+    statusIdx: index("installments_status_idx").on(table.status),
+  }),
+);
+
+export const supplierOrders = pgTable(
+  "supplier_orders",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .references(() => projects.id, { onDelete: "cascade" })
+      .notNull(),
+    serviceOrderId: uuid("service_order_id").references(() => serviceOrders.id, { onDelete: "cascade" }),
+    supplierId: uuid("supplier_id")
+      .references(() => suppliers.id)
+      .notNull(),
+    externalPedidoNumber: varchar("external_pedido_number", { length: 100 }),
+    status: supplierOrderStatusEnum("status").default("placed").notNull(),
+    orderDate: date("order_date"),
+    confirmedDate: date("confirmed_date"),
+    expectedDeliveryDate: date("expected_delivery_date"),
+    receivedDate: date("received_date"),
+    totalValue: numeric("total_value", { precision: 12, scale: 2 }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("supplier_orders_project_idx").on(table.projectId),
+    serviceOrderIdx: index("supplier_orders_so_idx").on(table.serviceOrderId),
+    supplierIdx: index("supplier_orders_supplier_idx").on(table.supplierId),
+    statusIdx: index("supplier_orders_status_idx").on(table.status),
+  }),
+);
+
+export const supplierOrderItems = pgTable(
+  "supplier_order_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    supplierOrderId: uuid("supplier_order_id")
+      .references(() => supplierOrders.id, { onDelete: "cascade" })
+      .notNull(),
+    serviceOrderItemId: uuid("service_order_item_id").references(() => serviceOrderItems.id),
+    materialId: uuid("material_id").references(() => materials.id),
+    materialSpecId: uuid("material_spec_id").references(() => materialSpecs.id),
+    description: text("description").notNull(),
+    specSnapshot: varchar("spec_snapshot", { length: 255 }),
+    quantity: numeric("quantity", { precision: 12, scale: 4 }).notNull(),
+    unitOfMeasure: varchar("unit_of_measure", { length: 20 }),
+    unitPrice: numeric("unit_price", { precision: 12, scale: 2 }),
+    totalPrice: numeric("total_price", { precision: 12, scale: 2 }),
+    dimensionsText: varchar("dimensions_text", { length: 100 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    supplierOrderIdx: index("supplier_order_items_order_idx").on(table.supplierOrderId),
+    serviceOrderItemIdx: index("supplier_order_items_so_item_idx").on(table.serviceOrderItemId),
+  }),
+);
+
+export const supplierPayments = pgTable(
+  "supplier_payments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    supplierOrderId: uuid("supplier_order_id")
+      .references(() => supplierOrders.id, { onDelete: "cascade" })
+      .notNull(),
+    type: supplierPaymentTypeEnum("type").notNull(),
+    value: numeric("value", { precision: 12, scale: 2 }).notNull(),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    paymentMethod: paymentMethodEnum("payment_method"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    supplierOrderIdx: index("supplier_payments_order_idx").on(table.supplierOrderId),
+  }),
+);
+
+export const installationTasks = pgTable(
+  "installation_tasks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .references(() => projects.id, { onDelete: "cascade" })
+      .notNull(),
+    serviceOrderId: uuid("service_order_id").references(() => serviceOrders.id, { onDelete: "cascade" }),
+    scheduledDate: date("scheduled_date").notNull(),
+    installerEmployeeId: uuid("installer_employee_id").references(() => employees.id),
+    helperEmployeeId: uuid("helper_employee_id").references(() => employees.id),
+    vehicleId: uuid("vehicle_id").references(() => vehicles.id),
+    status: installationTaskStatusEnum("status").default("scheduled").notNull(),
+    description: text("description"),
+    conclusionNotes: text("conclusion_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("installation_tasks_project_idx").on(table.projectId),
+    serviceOrderIdx: index("installation_tasks_so_idx").on(table.serviceOrderId),
+    scheduledDateIdx: index("installation_tasks_scheduled_date_idx").on(table.scheduledDate),
+    statusIdx: index("installation_tasks_status_idx").on(table.status),
+  }),
+);
+
+export const workflowTasks = pgTable(
+  "workflow_tasks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .references(() => projects.id, { onDelete: "cascade" })
+      .notNull(),
+    serviceOrderId: uuid("service_order_id").references(() => serviceOrders.id, { onDelete: "cascade" }),
+    type: workflowTaskTypeEnum("type").notNull(),
+    owningRole: userRoleEnum("owning_role").notNull(),
+    assignedUserId: uuid("assigned_user_id").references(() => users.id),
+    title: varchar("title", { length: 255 }).notNull(),
+    dueDate: date("due_date"),
+    status: workflowTaskStatusEnum("status").default("open").notNull(),
+    notes: text("notes"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("workflow_tasks_project_idx").on(table.projectId),
+    serviceOrderIdx: index("workflow_tasks_so_idx").on(table.serviceOrderId),
+    owningRoleIdx: index("workflow_tasks_owning_role_idx").on(table.owningRole),
+    assignedUserIdx: index("workflow_tasks_assigned_user_idx").on(table.assignedUserId),
+    statusIdx: index("workflow_tasks_status_idx").on(table.status),
+  }),
+);
+
+export const deviations = pgTable(
+  "deviations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .references(() => projects.id, { onDelete: "cascade" })
+      .notNull(),
+    serviceOrderId: uuid("service_order_id").references(() => serviceOrders.id, { onDelete: "cascade" }),
+    type: deviationTypeEnum("type").notNull(),
+    assignedUserId: uuid("assigned_user_id").references(() => users.id),
+    description: text("description").notNull(),
+    resolution: text("resolution"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("deviations_project_idx").on(table.projectId),
+    serviceOrderIdx: index("deviations_so_idx").on(table.serviceOrderId),
+    typeIdx: index("deviations_type_idx").on(table.type),
+  }),
+);
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    workflowTaskId: uuid("workflow_task_id").references(() => workflowTasks.id, { onDelete: "cascade" }),
+    targetRole: userRoleEnum("target_role"),
+    targetUserId: uuid("target_user_id").references(() => users.id),
+    severity: notificationSeverityEnum("severity").notNull(),
+    trigger: notificationTriggerEnum("trigger").notNull(),
+    conditionKey: varchar("condition_key", { length: 255 }).notNull(),
+    message: text("message").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    projectIdx: index("notifications_project_idx").on(table.projectId),
+    workflowTaskIdx: index("notifications_workflow_task_idx").on(table.workflowTaskId),
+    targetRoleIdx: index("notifications_target_role_idx").on(table.targetRole),
+    targetUserIdx: index("notifications_target_user_idx").on(table.targetUserId),
+    severityIdx: index("notifications_severity_idx").on(table.severity),
+    conditionIdx: index("notifications_condition_key_idx").on(table.conditionKey),
+  }),
+);
+
+export const attachments = pgTable(
+  "attachments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    entityType: varchar("entity_type", { length: 50 }).notNull(),
+    entityId: uuid("entity_id").notNull(),
+    fileName: varchar("file_name", { length: 500 }).notNull(),
+    fileUrl: text("file_url").notNull(),
+    fileType: varchar("file_type", { length: 50 }),
+    fileSize: integer("file_size"),
+    uploadedByUserId: uuid("uploaded_by_user_id").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    entityIdx: index("attachments_entity_idx").on(table.entityType, table.entityId),
+  }),
+);
 
 // ─────────────────────────────────────────────
 // RELATIONS
@@ -590,13 +886,40 @@ export const customersRelations = relations(customers, ({ many }) => ({
   projects: many(projects),
 }));
 
+export const usersRelations = relations(users, ({ many }) => ({
+  userRoles: many(userRoles),
+  measurementVisits: many(measurementVisits),
+  workflowTasks: many(workflowTasks),
+  notifications: many(notifications),
+  attachments: many(attachments),
+}));
+
+export const userRolesRelations = relations(userRoles, ({ one }) => ({
+  user: one(users, { fields: [userRoles.userId], references: [users.id] }),
+}));
+
+export const employeesRelations = relations(employees, ({ many }) => ({
+  installerTasks: many(installationTasks, { relationName: "installerEmployee" }),
+  helperTasks: many(installationTasks, { relationName: "helperEmployee" }),
+}));
+
+export const vehiclesRelations = relations(vehicles, ({ many }) => ({
+  installationTasks: many(installationTasks),
+}));
+
 export const projectsRelations = relations(projects, ({ one, many }) => ({
   customer: one(customers, { fields: [projects.customerId], references: [customers.id] }),
+  acceptedOrcamento: one(orcamentos, {
+    fields: [projects.acceptedOrcamentoId],
+    references: [orcamentos.id],
+  }),
   orcamentos: many(orcamentos),
-  serviceOrders: many(serviceOrders),
+  serviceOrder: one(serviceOrders),
   installments: many(installments),
+  measurementVisits: many(measurementVisits),
   supplierOrders: many(supplierOrders),
   installationTasks: many(installationTasks),
+  workflowTasks: many(workflowTasks),
   deviations: many(deviations),
   notifications: many(notifications),
 }));
@@ -607,92 +930,276 @@ export const orcamentosRelations = relations(orcamentos, ({ one, many }) => ({
   paymentTerms: many(orcamentoPaymentTerms),
 }));
 
-export const orcamentoItemsRelations = relations(orcamentoItems, ({ one }) => ({
-  orcamento: one(orcamentos, { fields: [orcamentoItems.orcamentoId], references: [orcamentos.id] }),
+export const linhasRelations = relations(linhas, ({ many }) => ({
+  materials: many(materials),
+  productTemplates: many(productTemplates),
+  orcamentoItems: many(orcamentoItems),
+  serviceOrderItems: many(serviceOrderItems),
 }));
 
-export const orcamentoPaymentTermsRelations = relations(orcamentoPaymentTerms, ({ one }) => ({
-  orcamento: one(orcamentos, { fields: [orcamentoPaymentTerms.orcamentoId], references: [orcamentos.id] }),
+export const materialsRelations = relations(materials, ({ one, many }) => ({
+  linha: one(linhas, { fields: [materials.linhaId], references: [linhas.id] }),
+  specs: many(materialSpecs),
+  orcamentoBomRows: many(orcamentoItemBomRows),
+  serviceOrderBomRows: many(serviceOrderItemBomRows),
+  supplierOrderItems: many(supplierOrderItems),
+}));
+
+export const suppliersRelations = relations(suppliers, ({ many }) => ({
+  materialSpecs: many(materialSpecs),
+  supplierOrders: many(supplierOrders),
+}));
+
+export const materialSpecsRelations = relations(materialSpecs, ({ one, many }) => ({
+  material: one(materials, { fields: [materialSpecs.materialId], references: [materials.id] }),
+  supplier: one(suppliers, { fields: [materialSpecs.supplierId], references: [suppliers.id] }),
+  orcamentoBomRows: many(orcamentoItemBomRows),
+  serviceOrderBomRows: many(serviceOrderItemBomRows),
+  supplierOrderItems: many(supplierOrderItems),
+}));
+
+export const productTemplatesRelations = relations(productTemplates, ({ one, many }) => ({
+  linha: one(linhas, { fields: [productTemplates.linhaId], references: [linhas.id] }),
+  params: many(productTemplateParams),
+  bomRows: many(productTemplateBom),
+  orcamentoItems: many(orcamentoItems),
+  serviceOrderItems: many(serviceOrderItems),
+}));
+
+export const productTemplateParamsRelations = relations(productTemplateParams, ({ one }) => ({
+  template: one(productTemplates, {
+    fields: [productTemplateParams.templateId],
+    references: [productTemplates.id],
+  }),
+}));
+
+export const productTemplateBomRelations = relations(productTemplateBom, ({ one }) => ({
+  template: one(productTemplates, {
+    fields: [productTemplateBom.templateId],
+    references: [productTemplates.id],
+  }),
+  material: one(materials, { fields: [productTemplateBom.materialId], references: [materials.id] }),
+  spec: one(materialSpecs, { fields: [productTemplateBom.specId], references: [materialSpecs.id] }),
+}));
+
+export const orcamentoItemsRelations = relations(orcamentoItems, ({ one, many }) => ({
+  orcamento: one(orcamentos, { fields: [orcamentoItems.orcamentoId], references: [orcamentos.id] }),
+  productTemplate: one(productTemplates, {
+    fields: [orcamentoItems.productTemplateId],
+    references: [productTemplates.id],
+  }),
+  linha: one(linhas, { fields: [orcamentoItems.linhaId], references: [linhas.id] }),
+  bomRows: many(orcamentoItemBomRows),
+  measurementVisitItems: many(measurementVisitItems),
+  serviceOrderItems: many(serviceOrderItems),
+}));
+
+export const orcamentoItemBomRowsRelations = relations(orcamentoItemBomRows, ({ one }) => ({
+  orcamentoItem: one(orcamentoItems, {
+    fields: [orcamentoItemBomRows.orcamentoItemId],
+    references: [orcamentoItems.id],
+  }),
+  material: one(materials, { fields: [orcamentoItemBomRows.materialId], references: [materials.id] }),
+  materialSpec: one(materialSpecs, {
+    fields: [orcamentoItemBomRows.materialSpecId],
+    references: [materialSpecs.id],
+  }),
+}));
+
+export const orcamentoPaymentTermsRelations = relations(orcamentoPaymentTerms, ({ one, many }) => ({
+  orcamento: one(orcamentos, {
+    fields: [orcamentoPaymentTerms.orcamentoId],
+    references: [orcamentos.id],
+  }),
+  installments: many(installments),
 }));
 
 export const serviceOrdersRelations = relations(serviceOrders, ({ one, many }) => ({
   project: one(projects, { fields: [serviceOrders.projectId], references: [projects.id] }),
+  sourceOrcamento: one(orcamentos, {
+    fields: [serviceOrders.sourceOrcamentoId],
+    references: [orcamentos.id],
+  }),
+  stampedByUser: one(users, {
+    fields: [serviceOrders.stampedByUserId],
+    references: [users.id],
+  }),
+  reviewedByUser: one(users, {
+    fields: [serviceOrders.reviewedByUserId],
+    references: [users.id],
+  }),
+  ceoExceptionApprovedByUser: one(users, {
+    fields: [serviceOrders.ceoExceptionApprovedByUserId],
+    references: [users.id],
+  }),
   items: many(serviceOrderItems),
+  measurementVisits: many(measurementVisits),
+  supplierOrders: many(supplierOrders),
+  installationTasks: many(installationTasks),
+  workflowTasks: many(workflowTasks),
+  deviations: many(deviations),
 }));
 
-export const serviceOrderItemsRelations = relations(serviceOrderItems, ({ one }) => ({
-  serviceOrder: one(serviceOrders, { fields: [serviceOrderItems.serviceOrderId], references: [serviceOrders.id] }),
+export const serviceOrderItemsRelations = relations(serviceOrderItems, ({ one, many }) => ({
+  serviceOrder: one(serviceOrders, {
+    fields: [serviceOrderItems.serviceOrderId],
+    references: [serviceOrders.id],
+  }),
+  sourceOrcamentoItem: one(orcamentoItems, {
+    fields: [serviceOrderItems.sourceOrcamentoItemId],
+    references: [orcamentoItems.id],
+  }),
+  productTemplate: one(productTemplates, {
+    fields: [serviceOrderItems.productTemplateId],
+    references: [productTemplates.id],
+  }),
+  linha: one(linhas, { fields: [serviceOrderItems.linhaId], references: [linhas.id] }),
+  bomRows: many(serviceOrderItemBomRows),
+  measurementVisitItems: many(measurementVisitItems),
+  supplierOrderItems: many(supplierOrderItems),
+}));
+
+export const serviceOrderItemBomRowsRelations = relations(serviceOrderItemBomRows, ({ one }) => ({
+  serviceOrderItem: one(serviceOrderItems, {
+    fields: [serviceOrderItemBomRows.serviceOrderItemId],
+    references: [serviceOrderItems.id],
+  }),
+  material: one(materials, { fields: [serviceOrderItemBomRows.materialId], references: [materials.id] }),
+  materialSpec: one(materialSpecs, {
+    fields: [serviceOrderItemBomRows.materialSpecId],
+    references: [materialSpecs.id],
+  }),
+}));
+
+export const measurementVisitsRelations = relations(measurementVisits, ({ one, many }) => ({
+  project: one(projects, { fields: [measurementVisits.projectId], references: [projects.id] }),
+  serviceOrder: one(serviceOrders, {
+    fields: [measurementVisits.serviceOrderId],
+    references: [serviceOrders.id],
+  }),
+  performedByUser: one(users, {
+    fields: [measurementVisits.performedByUserId],
+    references: [users.id],
+  }),
+  items: many(measurementVisitItems),
+}));
+
+export const measurementVisitItemsRelations = relations(measurementVisitItems, ({ one }) => ({
+  measurementVisit: one(measurementVisits, {
+    fields: [measurementVisitItems.measurementVisitId],
+    references: [measurementVisits.id],
+  }),
+  orcamentoItem: one(orcamentoItems, {
+    fields: [measurementVisitItems.orcamentoItemId],
+    references: [orcamentoItems.id],
+  }),
+  serviceOrderItem: one(serviceOrderItems, {
+    fields: [measurementVisitItems.serviceOrderItemId],
+    references: [serviceOrderItems.id],
+  }),
 }));
 
 export const installmentsRelations = relations(installments, ({ one }) => ({
   project: one(projects, { fields: [installments.projectId], references: [projects.id] }),
-}));
-
-export const suppliersRelations = relations(suppliers, ({ many }) => ({
-  orders: many(supplierOrders),
-  materialSpecs: many(materialSpecs),
+  sourcePaymentTerm: one(orcamentoPaymentTerms, {
+    fields: [installments.sourcePaymentTermId],
+    references: [orcamentoPaymentTerms.id],
+  }),
 }));
 
 export const supplierOrdersRelations = relations(supplierOrders, ({ one, many }) => ({
   project: one(projects, { fields: [supplierOrders.projectId], references: [projects.id] }),
+  serviceOrder: one(serviceOrders, {
+    fields: [supplierOrders.serviceOrderId],
+    references: [serviceOrders.id],
+  }),
   supplier: one(suppliers, { fields: [supplierOrders.supplierId], references: [suppliers.id] }),
   items: many(supplierOrderItems),
   payments: many(supplierPayments),
 }));
 
 export const supplierOrderItemsRelations = relations(supplierOrderItems, ({ one }) => ({
-  supplierOrder: one(supplierOrders, { fields: [supplierOrderItems.supplierOrderId], references: [supplierOrders.id] }),
+  supplierOrder: one(supplierOrders, {
+    fields: [supplierOrderItems.supplierOrderId],
+    references: [supplierOrders.id],
+  }),
+  serviceOrderItem: one(serviceOrderItems, {
+    fields: [supplierOrderItems.serviceOrderItemId],
+    references: [serviceOrderItems.id],
+  }),
   material: one(materials, { fields: [supplierOrderItems.materialId], references: [materials.id] }),
+  materialSpec: one(materialSpecs, {
+    fields: [supplierOrderItems.materialSpecId],
+    references: [materialSpecs.id],
+  }),
 }));
 
 export const supplierPaymentsRelations = relations(supplierPayments, ({ one }) => ({
-  supplierOrder: one(supplierOrders, { fields: [supplierPayments.supplierOrderId], references: [supplierOrders.id] }),
-}));
-
-export const linhasRelations = relations(linhas, ({ many }) => ({
-  materials: many(materials),
-  productTemplates: many(productTemplates),
-}));
-
-export const materialsRelations = relations(materials, ({ one, many }) => ({
-  linha: one(linhas, { fields: [materials.linhaId], references: [linhas.id] }),
-  specs: many(materialSpecs),
-  supplierOrderItems: many(supplierOrderItems),
-}));
-
-export const materialSpecsRelations = relations(materialSpecs, ({ one }) => ({
-  material: one(materials, { fields: [materialSpecs.materialId], references: [materials.id] }),
-  supplier: one(suppliers, { fields: [materialSpecs.supplierId], references: [suppliers.id] }),
-}));
-
-export const productTemplatesRelations = relations(productTemplates, ({ one, many }) => ({
-  linha: one(linhas, { fields: [productTemplates.linhaId], references: [linhas.id] }),
-  params: many(productTemplateParams),
-  bom: many(productTemplateBom),
-}));
-
-export const productTemplateParamsRelations = relations(productTemplateParams, ({ one }) => ({
-  template: one(productTemplates, { fields: [productTemplateParams.templateId], references: [productTemplates.id] }),
-}));
-
-export const productTemplateBomRelations = relations(productTemplateBom, ({ one }) => ({
-  template: one(productTemplates, { fields: [productTemplateBom.templateId], references: [productTemplates.id] }),
-  material: one(materials, { fields: [productTemplateBom.materialId], references: [materials.id] }),
-  spec: one(materialSpecs, { fields: [productTemplateBom.specId], references: [materialSpecs.id] }),
+  supplierOrder: one(supplierOrders, {
+    fields: [supplierPayments.supplierOrderId],
+    references: [supplierOrders.id],
+  }),
 }));
 
 export const installationTasksRelations = relations(installationTasks, ({ one }) => ({
   project: one(projects, { fields: [installationTasks.projectId], references: [projects.id] }),
+  serviceOrder: one(serviceOrders, {
+    fields: [installationTasks.serviceOrderId],
+    references: [serviceOrders.id],
+  }),
+  installerEmployee: one(employees, {
+    relationName: "installerEmployee",
+    fields: [installationTasks.installerEmployeeId],
+    references: [employees.id],
+  }),
+  helperEmployee: one(employees, {
+    relationName: "helperEmployee",
+    fields: [installationTasks.helperEmployeeId],
+    references: [employees.id],
+  }),
+  vehicle: one(vehicles, { fields: [installationTasks.vehicleId], references: [vehicles.id] }),
+}));
+
+export const workflowTasksRelations = relations(workflowTasks, ({ one, many }) => ({
+  project: one(projects, { fields: [workflowTasks.projectId], references: [projects.id] }),
+  serviceOrder: one(serviceOrders, {
+    fields: [workflowTasks.serviceOrderId],
+    references: [serviceOrders.id],
+  }),
+  assignedUser: one(users, {
+    fields: [workflowTasks.assignedUserId],
+    references: [users.id],
+  }),
+  notifications: many(notifications),
 }));
 
 export const deviationsRelations = relations(deviations, ({ one }) => ({
   project: one(projects, { fields: [deviations.projectId], references: [projects.id] }),
+  serviceOrder: one(serviceOrders, {
+    fields: [deviations.serviceOrderId],
+    references: [serviceOrders.id],
+  }),
+  assignedUser: one(users, {
+    fields: [deviations.assignedUserId],
+    references: [users.id],
+  }),
 }));
 
 export const notificationsRelations = relations(notifications, ({ one }) => ({
   project: one(projects, { fields: [notifications.projectId], references: [projects.id] }),
+  workflowTask: one(workflowTasks, {
+    fields: [notifications.workflowTaskId],
+    references: [workflowTasks.id],
+  }),
+  targetUser: one(users, {
+    fields: [notifications.targetUserId],
+    references: [users.id],
+  }),
 }));
 
 export const attachmentsRelations = relations(attachments, ({ one }) => ({
-  uploadedBy: one(users, { fields: [attachments.uploadedById], references: [users.id] }),
+  uploadedByUser: one(users, {
+    fields: [attachments.uploadedByUserId],
+    references: [users.id],
+  }),
 }));
